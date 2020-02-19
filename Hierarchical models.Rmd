@@ -1,0 +1,276 @@
+---
+title: "Hierarchical models for multiple outcomes"
+author: "John Best"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document: default
+  pdf_document: default
+subtitle: Application to trials on the effects of exercise on executive function.
+bibliography: Biblioteca.bib
+---
+
+**Introduction**
+
+One of the issues prevalent in research on the effects of exercise on cognition broadly, and executive function (EF) specifically, is that of analyzing multiple outcomes. There are multiple measures of cognition, each of which ostensibly taps into different domains and sub-domains of cognition. Executive function, for example, is purported to involve a collection of processes, each distinct yet correlated with the others (the 'Unity and Diversity' view from Miyake and colleagues)[@RN4] Thus it makes sense to collect multiple EF measures in order to assess the range of EF processing and to under the specific-versus-broad effects of exercise in the EF domain.
+
+But how to appropriately analyze all these data? 
+
+One way--and likely the most common way--is to run a separate model for each of the outcomes, treating each as wholly independent measures. This would be the extreme take on 'diversity', using the phrasing of Miyake and colleagues. Perhaps this would make sense if the researcher could clearly prioritize the measures of EF ahead of time, selecting a primary outcome, secondary outcome, etc. The analytic procedure could flow from this prioritization, with ordering of the models run, allocation of type 1 error across outcomes, etc. 
+
+However, at this point of time, it's not clear how cognitive measures should be prioritized or *whether* they should be prioritized. As noted above, there is not clear evidence that exercise would have selective effects, especially within the realm of EF. My colleagues and I conducted a meta-analysis [@RN5] and did not observe clear evidence that the effect of exercise training on cognition varied by domain. 
+
+Conversely, one could go extreme in the other direction toward 'unity'; that is, measure EF globally. This could be done most easily by creating a composite EF measure (average or sum of the individual measures). More sophisticated would be to use a latent variable approach and allow all the observed variables to load onto a common latent cognitive variable. We've taken the latter approach previously [@RN6].
+
+A middle ground approach which allows for both 'unity and diversity' would be to use a hierarchical model, in which specific EF outcomes are modeled as being sampled from a larger distribution of possible EF outcomes. This approach results in *partial pooling* of effects across the specific EF outcomes and stands in contrast to *complete pooling*--i.e., evaluating treatment effects on a composite cognitive measure--and *no pooling*--i.e., evaluating treatment effects on each cognitive outcome independently [@RN3]. This partial pooling shrinks the outcome-specific estimates towards the average effect.
+
+**An Illustration using Eckardt, Braun, & Kibele 2020**
+
+Exploration of the utility of hierarchical models in this context was prompted by a recent article by Eckardt, Braun, & Kibele 2020 [@RN1] published in *Scientific Reports* on the effects of three different types of exercise training on executive functions in older adults. The resistance training program occurred twice-per-week over 10 weeks. The main contrast was between instability resistance training and the average of two forms of stable training (geneeral resistance and hip-specific). Several aspects of executive function were measured by commonly used measures: digit symbol substitution test, the Stroop test (3 parts), the trail making test (2 parts), and digit memory test. These tests reflect the common sub-domains of executive function: working memory, response inhibition, and cognitive flexibility. These measures also tap into processing speed. This paper has lots of strengths including the fact that it is a randomized, double-blind experiment and that the authors provided the data along with the published manuscript. 
+
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(patchwork)
+library(readxl)
+library(brms)
+library(emmeans)
+
+knitr::opts_chunk$set(echo = TRUE)
+data <- read_excel("41598_2020_59105_MOESM1_ESM.xlsx", 
+                   sheet = "KFPS_RESULTS")
+
+small <- data %>% 
+  select(Code,AGE,MMSE,
+         pre_DigitS,pre_DigitM_score,pre_TMT_a,pre_TMT_b,pre_Stroop_m_B1,pre_Stroop_m_B2,pre_Stroop_m_B3,
+         post_DigitS,post_DigitM_score,post_TMT_a,post_TMT_b,post_Stroop_m_B1,post_Stroop_m_B2,post_Stroop_m_B3) %>% 
+  mutate(ID=seq(1:nrow(.)))
+
+small %>% 
+  select(pre_DigitS:pre_Stroop_m_B3) %>% 
+  drop_na() %>% 
+  cor()
+
+long <- small %>% 
+  gather(Time_Outcome,Score,pre_DigitS:post_Stroop_m_B3) %>% 
+  mutate(Time_Outcome=sub("_","-",Time_Outcome)) %>% 
+  separate(Time_Outcome,c("Time","Outcome"),sep="-")
+
+wide <- long %>% 
+  spread(Time,Score)
+
+wide <- wide %>% 
+  group_by(Outcome) %>% 
+  drop_na(pre,post) %>% 
+  mutate(pre_z = scale(pre),
+         post_z = scale(post,center=mean(pre),scale=sd(pre)), #standardize post according to baseline distributions
+         pre_z = ifelse(Outcome=="DigitS"|Outcome=="DigitM_score",pre_z,pre_z*-1), #reverse code completion time variables
+         post_z = ifelse(Outcome=="DigitS"|Outcome=="DigitM_score",post_z,post_z*-1) #reverse code completion time variables
+         )
+
+```
+
+As a starting point for all data analysis, data are manipulated to a stacked format such that each participant has 7 rows of data -- one row for each of the 7 cognitive outcomes. Further, data were standardized using the outcome specific mean and standard deviation at baseline. The first 10 rows of data are shown below.
+
+```{r view data, echo=FALSE}
+knitr::kable(wide[1:10,c(4,1,5:9)]) 
+```
+
+*Single-level models*
+
+To estimate the standard, no pooling approach, a separate linear regression model was fit to each of the outcomes. For the current analyses, two deviations were taken from the analyses of Eckardt, Braun, & Kibele 2020 [@RN1]. First, rather compute difference scores within Stroop and TMT (e.g., TMT Part B minus Part A), each part was treated as distinct outcome. This was done primarily to increase the number of possible outcomes that fall within the EF/processing speed domain and secondarily because difference scores have been shown to have very poor reliability [@RN7]. The second deviation was to model as the outcome the post-intervention EF score and include pre-intervention EF score as a covariate, rather than use the change score. As Frank Harrell has clearly summarized, change from baseline is typically inferior to the baseline-adjusted post-intervention score (https://www.fharrell.com/post/errmed/#change).
+
+Summarized as a single equation, post-intervention EF performance for specific measure *c* (c=1,...,C) is a function of measure-specific fixed intercept, measure-specific fixed effect of baseline EF, measure-specific effect of S-MRT, and measure-specific effect of S-MRTHIP. Implied in this equation is that I-FRT serves as the reference group. Subscript $i$ refers to a specific study participant (i = 1,...I).
+
+$$
+EF_{post,ic} =\beta_{0c} + EF_{pre,ic}*\beta_{1c} + SMRT_i*\beta_{2c} + SMRT_{HIPi}*\beta_{3c} + \epsilon_{ic}
+$$
+A separate model for each of the 7 outcomes was estimated by looping through each of the outcomes in R using OLS regression as follows:
+
+```{r separate LMs, warning=FALSE, echo=TRUE}
+
+outcomes <- c("DigitM_score",
+              "DigitS",
+              "Stroop_m_B1",
+              "Stroop_m_B2",
+              "Stroop_m_B3",
+              "TMT_a",
+              "TMT_b")
+
+contrast1 <- c(-1,0.5,0.5)
+contrast2 <- c(0,-1,1)
+
+summary <- tibble()
+for (outcome in outcomes){
+  mdl1 <- lm(post_z~pre_z+Code,subset(wide,Outcome==outcome))
+  means <- emmeans(mdl1,"Code")
+  ctrs <- contrast(means,list(contrast1,contrast2))
+  #data <- as_tibble(summary(mdl1)$coef)
+  #data$Contrast <- rep(c("Intercept","pre_z","SMMRT","SMMRTHIP"),1)
+  data <- as_tibble(ctrs)
+  data$Contrast <- c("Instability vs. Stability","S-MRT vs S-MRThip")
+  data$Outcome <- outcome
+  summary <- bind_rows(summary,data)
+}
+
+
+```
+
+```{r single level summary, echo=FALSE, warning=FALSE, include=FALSE}
+summary <- summary %>% 
+  mutate(Estimate=estimate,
+         Q2.5 = Estimate-1.96*SE,
+         Q97.5 = Estimate+1.96*SE) %>% 
+  select(-contrast,-estimate,-SE,-df,-t.ratio,-p.value)
+```
+
+*Hierarchical model*
+
+We start with the same notation as the single-level models above but now this refers to a single regression model as opposed to encompassing 7 distinct models. Specifically, this refers to level 1 of the model -- i.e., specific outcome for specific individual. 
+
+$$
+EF_{post,ic} =\beta_{0c} + EF_{pre,ic}*\beta_{1c} + SMRT_i*\beta_{2c} + SMRT_{HIPi}*\beta_{3c} + \epsilon_{ic}\\
+$$
+
+Level 2 describes the variation in the $\beta$ value j (j=1,...,J) as a function of the population-level effect and measure-specific and person-specific random deviations from the population effect. Separate population-level effect ($\gamma$), measure-specific random deviation ($u_{c}$), and person-specific random deviation ($u_{i}$) are estimated for the 4 $\beta$ coefficients at level 1. 
+
+$$
+\beta_{jc} = \gamma_{j} + u_{cj} + u_{ij}\\
+$$
+The measure-specific and subject-specific deviations are assumed to be drawn from normal distributions with mean of zero and a variance that is unique to each random effect.
+
+$$
+u_{cj} \sim N(0,\sigma^2_{cj}), \\
+u_{ij} \sim N(0,\sigma^2_{ij})
+$$
+It is this fact that each outcome-specific estimate is drawn from a common distribution using all the data that causes the shrinkage toward a common population-level effect ($\gamma$). This is the partial pooling or 'unity and diversity' of EF in action.
+
+Priors were placed on the fixed effects and random variance parameters. For fixed effects, a normal, somewhat diffuse prior with mean of zero and variance of 2.5. 
+
+$$
+\gamma_{j} \sim N(0,2.5)\\
+$$
+
+For the subject and outcome variance estimates, a half-Cauchy prior with location of 0 and scale of 2.5 was used [@RN2]. This implies that a fairly large range of variation between outcomes is plausible, though with smaller variation being more likely.
+
+$$
+\sigma_{cj} \sim Cauchy(0,2.5), \\
+\sigma_{ij} \sim Cauchy(0,2.5)
+$$
+
+
+A hierarchical Bayesian model was estimated using the package `brms`.
+```{r hierarchical model, echo=TRUE,warning=FALSE}
+mdl2 <-
+  brm(data=wide,family=gaussian,
+      post_z ~ 1 + pre_z + Code +
+        (1 + Code + pre_z |Outcome) + #Random effects over outcomes
+        (1 + Code + pre_z |ID), #Random effects over subjects
+      prior = c(prior(normal(0,2.5), class = Intercept),
+                prior(normal(0,2.5), class = b),
+                prior(cauchy(0,2.5), class = sd)
+                ),
+      iter = 5000, warmup = 1000, chains = 4, cores = 4,
+      control = list(adapt_delta = 0.99),
+      seed = 12)
+
+
+```
+
+```{r hierarchical summary, echo=FALSE, warning=FALSE}
+post <- posterior_samples(mdl2) %>%
+  as_tibble() %>%
+  mutate(UvsS_DSST = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[DigitS,CodeSMMRT]` + `r_Outcome[DigitS,CodeSMMRTHIP]`)/2,
+         UvsS_DMS = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[DigitM_score,CodeSMMRT]` + `r_Outcome[DigitM_score,CodeSMMRTHIP]`)/2,
+         UvsS_TMTA = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[TMT_a,CodeSMMRT]` + `r_Outcome[TMT_a,CodeSMMRTHIP]`)/2,
+         UvsS_TMTB = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[TMT_b,CodeSMMRT]` + `r_Outcome[TMT_b,CodeSMMRTHIP]`)/2,
+         UvsS_Stroop1 = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B1,CodeSMMRT]` + `r_Outcome[Stroop_m_B1,CodeSMMRTHIP]`)/2,
+         UvsS_Stroop2 = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B2,CodeSMMRT]` + `r_Outcome[Stroop_m_B2,CodeSMMRTHIP]`)/2,
+         UvsS_Stroop3 = (b_CodeSMMRT + b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B3,CodeSMMRT]` + `r_Outcome[Stroop_m_B3,CodeSMMRTHIP]`)/2,
+         WIS_DSST = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[DigitS,CodeSMMRT]` - `r_Outcome[DigitS,CodeSMMRTHIP]`),
+         WIS_DMS = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[DigitM_score,CodeSMMRT]` - `r_Outcome[DigitM_score,CodeSMMRTHIP]`),
+         WIS_TMTA = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[TMT_a,CodeSMMRT]` - `r_Outcome[TMT_a,CodeSMMRTHIP]`),
+         WIS_TMTB = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[TMT_b,CodeSMMRT]` - `r_Outcome[TMT_b,CodeSMMRTHIP]`),
+         WIS_Stroop1 = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B1,CodeSMMRT]` - `r_Outcome[Stroop_m_B1,CodeSMMRTHIP]`),
+         WIS_Stroop2 = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B2,CodeSMMRT]` - `r_Outcome[Stroop_m_B2,CodeSMMRTHIP]`),
+         WIS_Stroop3 = (b_CodeSMMRT - b_CodeSMMRTHIP + `r_Outcome[Stroop_m_B3,CodeSMMRT]` - `r_Outcome[Stroop_m_B3,CodeSMMRTHIP]`))
+
+
+hier_estimates <-
+  tibble(Contrast=rep(c("Instability vs. Stability","S-MRT vs S-MRThip"),7),
+         Outcome=rep(outcomes,each=2),
+         Estimate=c(mean(post$UvsS_DMS),mean(post$WIS_DMS),mean(post$UvsS_DSST),mean(post$WIS_DSST),
+                    mean(post$UvsS_Stroop1),mean(post$WIS_Stroop1),mean(post$UvsS_Stroop2),mean(post$WIS_Stroop2),
+                    mean(post$UvsS_Stroop3),mean(post$WIS_Stroop3),mean(post$UvsS_TMTA),mean(post$WIS_TMTA),
+                    mean(post$UvsS_TMTB),mean(post$WIS_TMTB)),
+         Q2.5=c(quantile(post$UvsS_DMS,probs=c(.025)),quantile(post$WIS_DMS,probs=c(.025)),quantile(post$UvsS_DSST,probs=c(.025)),
+                quantile(post$WIS_DSST,probs=c(.025)),quantile(post$UvsS_Stroop1,probs=c(.025)),quantile(post$WIS_Stroop1,probs=c(.025)),
+                quantile(post$UvsS_Stroop2,probs=c(.025)),quantile(post$WIS_Stroop2,probs=c(.025)),quantile(post$UvsS_Stroop3,probs=c(.025)),
+                quantile(post$WIS_Stroop3,probs=c(.025)),quantile(post$UvsS_TMTA,probs=c(.025)),quantile(post$WIS_TMTA,probs=c(.025)),
+                quantile(post$UvsS_TMTB,probs=c(.025)),quantile(post$WIS_TMTB,probs=c(.025))),
+         Q97.5=c(quantile(post$UvsS_DMS,probs=c(.975)),quantile(post$WIS_DMS,probs=c(.975)),quantile(post$UvsS_DSST,probs=c(.975)),
+                quantile(post$WIS_DSST,probs=c(.975)),quantile(post$UvsS_Stroop1,probs=c(.975)),quantile(post$WIS_Stroop1,probs=c(.975)),
+                quantile(post$UvsS_Stroop2,probs=c(.975)),quantile(post$WIS_Stroop2,probs=c(.975)),quantile(post$UvsS_Stroop3,probs=c(.975)),
+                quantile(post$WIS_Stroop3,probs=c(.975)),quantile(post$UvsS_TMTA,probs=c(.975)),quantile(post$WIS_TMTA,probs=c(.975)),
+                quantile(post$UvsS_TMTB,probs=c(.975)),quantile(post$WIS_TMTB,probs=c(.975)))
+           )
+```
+
+```{r combine hierarchical and single level estimates, echo=FALSE,include=FALSE}
+combined_df <- bind_rows(hier_estimates,summary) %>%
+  mutate(Model=rep(c("Hierarchical","Single\nLevel"),each=14))
+```
+
+
+
+
+```{r Figure 1,echo=FALSE}
+pd <- position_dodge(0.3)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7") #colorblind-friendly palette
+Fig1 <- combined_df %>%
+  filter(Contrast=="Instability vs. Stability") %>%
+  ggplot(aes(y=Estimate,x=Outcome,group=Model,colour=Model)) +
+  geom_point(position = pd,size=4) +
+  geom_errorbar(aes(ymin=Q2.5,ymax=Q97.5),position=pd,width=0.2,size=1) +
+  theme_classic(base_size=12) +
+  geom_hline(yintercept=mean((post$b_CodeSMMRT+post$b_CodeSMMRTHIP)/2),linetype="dashed") +
+  geom_hline(yintercept=0,linetype="dotted") +
+  scale_x_discrete(labels=c("DMS","DSST","Stroop 1", "Stroop 2", "Stroop 3", "TMT A", "TMT B")) +
+  scale_colour_manual(values=cbPalette) +
+  ylab("Standardized Difference") +
+  coord_cartesian(clip="off") +
+  annotate("text",y=0,x=7.5,label="No\ndiff") +
+  annotate("text",y=-.30,x=7.5,label="Avg\ndiff") +
+  ggtitle("Instable vs Stable Training")
+```
+
+```{r Figure 2,echo=FALSE}
+pd <- position_dodge(0.3)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7") #colorblind-friendly palette
+Fig2 <- combined_df %>%
+  filter(Contrast=="S-MRT vs S-MRThip") %>%
+  ggplot(aes(y=Estimate,x=Outcome,group=Model,colour=Model)) +
+  geom_point(position = pd,size=4) +
+  geom_errorbar(aes(ymin=Q2.5,ymax=Q97.5),position=pd,width=0.2,size=1) +
+  theme_classic(base_size=12) +
+  geom_hline(yintercept=mean((post$b_CodeSMMRT-post$b_CodeSMMRTHIP)),linetype="dashed") +
+  scale_x_discrete(labels=c("DMS","DSST","Stroop 1", "Stroop 2", "Stroop 3", "TMT A", "TMT B")) +
+  scale_colour_manual(values=cbPalette) +
+  ylab("Standardized Difference") +
+  coord_cartesian(clip="off") +
+  annotate("text",y=-.01,x=7.5,label="Avg\ndiff") +
+  ggtitle("Stable Resistance vs Hip Training")
+```
+
+Estimates and 95% credible/confidence intervals for the hierarchical (gray) and single-level (yellow) models are shown in the **Figure** below. The top plot is for the contrast between the average of the two stable training conditions versus instable training and the bottom plot is the between-group difference between stable resistance and stable hip training. The partial pooling effect is evident with much less between-outcome variation in the hierarchical estimates versus the single-level estimates. Stated somewhat differently, the random effects from the hierarchical model have been pooled toward average effect (reflected as a dashed horizontal line). Also critical is the smaller Bayesian 95% credible intervals as compared to the frequentist 95% confidence intervals for the single-level models, leading to better precision in the estimates given the assumptions of the model. In the top comparison of stable versus instable training, a horizontal line at zero is shown to reflect an estimate of no difference.
+
+```{r Combine figures, echo=FALSE,warning=FALSE, fig.height=6, fig.cap="Comparison of hierarchical and single level models"}
+Fig1/Fig2
+```
+
+What to conclude from the hierarchical analysis? The data appear consistent with a modest positive impact of instability resistance training on EF in comparison to stable resistance training, with differences very close to zero and up to 0.5 standard deviations being compatible with the data. With respect to differences by type of stability training, the data are consistent with either small differences favouring one form or the other. In this sense, the conclusions are similar to those proposed by Eckardt et al. 2020 [@RN1]. There is some outcome-specific variation but it appears fairly neglible.
+
+As Gelman et al. note [@RN2], there is a conceptual leap one makes when treating multiple outcomes in this way. Each outcome is assumed to be *exchangeable*, which is to say, measuring the same phenomena or randomly drawn from the same underlying distribution of outcomes. Whether that assumption is defensible will be context dependent. As noted above, there is no strong theory to suggest that resistance training would impact EF subcomponents differentially, and therefore, could be considered exhangeable in this context. That being said, hierarchical models only partially pool across outcomes, and relative to either complete pooling versus no pooling of data, the hierarchical analysis more closely aligns with the 'unity and diversity' theory of EF organization [@RN4] and reflects a more holistic analysis of the data.
+
+**References**
+
+
